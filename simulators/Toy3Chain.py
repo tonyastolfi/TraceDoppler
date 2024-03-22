@@ -7,7 +7,7 @@ from pyjaegersim import Application, Microservice
 skews = [-27, 17, 10, -5, 8]  # clock skew in ms
 skews = [0, 0, 0, 0, 0]
 nodes = {
-    key: Microservice(key, skew) for key, skew in zip(["A", "B", "C", "D", "E"], skews)
+    key: Microservice(key, int(skew*1e6)) for key, skew in zip(["A", "B", "C", "D", "E"], skews)
 }
 edges = {"A": [("B", 15)], "B": [("C", 20)], "C": [("D", 15)], "E": [("B", 15)]}
 # transform ms to ns
@@ -28,7 +28,7 @@ toy_model = Application(
 )
 
 start_time = int(time_ns())
-for _ in range(10000):
+for _ in range(1500):
     start_time += int(10 * 1e6)
     sleep(0.0000000000000001)  # Prevents jaeger queue saturation
-    toy_model.generate_trace()
+    toy_model.generate_trace(verbose=False)
