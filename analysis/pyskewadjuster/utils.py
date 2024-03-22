@@ -1,3 +1,5 @@
+from typing import List
+
 def generate_call_tree(trace):
     """Generates a span call tree from a trace."""
     spans = trace["spans"]
@@ -69,3 +71,18 @@ def get_ntp_params_calltree(call_tree, spans):
                 (theta, delta, childSpan["operationName"])
             )
     return ntp_params
+
+def get_attribute_from_tags(span, attribute, default=None):
+    """Gets an attribute from the tags of a span."""
+    for tag in span["tags"]:
+        if tag["key"] == attribute:
+            return tag["value"]
+    return default
+
+
+def get_attribute_idx_from_tags(span, attribute):
+    """Gets the index of an attribute from the tags of a span."""
+    for idx, tag in enumerate(span["tags"]):
+        if tag["key"] == attribute:
+            return idx
+    return -1

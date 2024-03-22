@@ -4,23 +4,7 @@ import argparse
 
 import numpy as np
 
-from .utils import get_ntp_params_calltree, generate_call_tree
-
-
-def get_attribute_from_tags(span, attribute, default=None):
-    """Gets an attribute from the tags of a span."""
-    for tag in span["tags"]:
-        if tag["key"] == attribute:
-            return tag["value"]
-    return default
-
-
-def get_attribute_idx_from_tags(span, attribute):
-    """Gets the index of an attribute from the tags of a span."""
-    for idx, tag in enumerate(span["tags"]):
-        if tag["key"] == attribute:
-            return idx
-    return -1
+from .utils import get_ntp_params_calltree, generate_call_tree, get_attribute_from_tags, get_attribute_idx_from_tags
 
 
 def apply_ntp_symmetric(parentSpan, childSpan, theta, delta, only_parent=True):
@@ -72,7 +56,7 @@ def _preprocess_original_time(tracedata, verbose=True):
                 )
 
 
-def correct_trace_skew(tracedata, verbose=False):
+def correct_skew(tracedata, verbose=False):
     """Corrects the skew in a trace."""
 
     _preprocess_original_time(tracedata, verbose=verbose)
@@ -122,19 +106,19 @@ def correct_trace_skew(tracedata, verbose=False):
                 theta, delta = median_ntp_params[service][child_span["operationName"]]
                 span["startTime"] += theta / 2.0
 
-                idx = get_attribute_idx_from_tags(span, "clock-skew-correction")
+                idx = get_attribute_idx_from_tags(span, "clock_skew_correction")
                 if idx == -1:
                     span["tags"].append(
-                        {"key": "clock-skew-correction", "value": theta / 2.0}
+                        {"key": "clock_skew_correction", "value": theta / 2.0}
                     )
                 else:
                     span["tags"][idx]["value"] += theta / 2.0
 
                 child_span["startTime"] -= theta / 2.0
-                idx = get_attribute_idx_from_tags(child_span, "clock-skew-correction")
+                idx = get_attribute_idx_from_tags(child_span, "clock_skew_correction")
                 if idx == -1:
                     child_span["tags"].append(
-                        {"key": "clock-skew-correction", "value": -theta / 2.0}
+                        {"key": "clock_skew_correction", "value": -theta / 2.0}
                     )
                 else:
                     child_span["tags"][idx]["value"] -= theta / 2.0
@@ -143,8 +127,8 @@ def correct_trace_skew(tracedata, verbose=False):
     for trace in tracedata:
         spans = trace["spans"]
         for span in spans:
-            idx = get_attribute_idx_from_tags(child_span, "clock-skew-correction")
+            idx = get_attribute_idx_from_tags(child_span, "clock_skew_correction")
             if idx != -1:
-                child_span["tags"][idx]["value"] = str(child_span["tags"][idx]["value"])
+                child_span["tags"][idx]["value"] = str(int(child_span["tags"][idx]["value"]))
 
     return tracedata
