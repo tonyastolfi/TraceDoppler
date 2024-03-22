@@ -823,7 +823,6 @@ class Span(trace_api.Span, ReadableSpan):
     def set_attribute(self, key: str, value: types.AttributeValue) -> None:
         return self.set_attributes({key: value})
 
-    @_check_span_ended
     def _add_event(self, event: EventBase) -> None:
         self._events.append(event)
 
