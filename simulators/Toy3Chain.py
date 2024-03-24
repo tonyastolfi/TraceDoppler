@@ -5,9 +5,9 @@ from time import time_ns, sleep
 from pyjaegersim import Application, Microservice
 
 skews = [-27, 17, 10, -5, 8]  # clock skew in ms
-skews = [0, 0, 0, 0, 0]
 nodes = {
-    key: Microservice(key, int(skew*1e6)) for key, skew in zip(["A", "B", "C", "D", "E"], skews)
+    key: Microservice(key, int(skew * 1e6))
+    for key, skew in zip(["A", "B", "C", "D", "E"], skews)
 }
 edges = {"A": [("B", 15)], "B": [("C", 20)], "C": [("D", 15)], "E": [("B", 15)]}
 # transform ms to ns
