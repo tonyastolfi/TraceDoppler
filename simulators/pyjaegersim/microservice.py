@@ -96,7 +96,10 @@ class Microservice(_microservice):
     @staticmethod
     def _sample_poisson_latency(latency: float):
         if latency > 1.0e6:
-            return max(int(np.random.poisson(int(latency/1.0e6), size=1)[0]*1e6), int(0.1 * MS_FROM_NS))
+            return max(
+                int(np.random.poisson(int(latency / 1.0e6), size=1)[0] * 1e6),
+                int(0.1 * MS_FROM_NS),
+            )
         else:
             return max(np.random.poisson(latency, size=1)[0], int(0.1 * MS_FROM_NS))
 
@@ -127,15 +130,16 @@ class Microservice(_microservice):
             start_time=startTime + self.clock_skew,
             duration=self.LEAF_RUNTIME,
             end_on_exit=True,
-            attributes={"service": self.name, 
-                        "global_skew_ns": self.clock_skew,
-                        "global_skew_ms": self.clock_skew/1.0e6,
-                        "forward_latency_ns": forward_latency_metadata,
-                        "forward_latency_ms": forward_latency_metadata/1.0e6,
-                        "back_latency_ns": back_latency_metadata,
-                        "back_latency_ms": back_latency_metadata/1.0e6,
-                        "original_start_time": startTime,
-                        },
+            attributes={
+                "service": self.name,
+                "global_skew_ns": self.clock_skew,
+                "global_skew_ms": self.clock_skew / 1.0e6,
+                "forward_latency_ns": forward_latency_metadata,
+                "forward_latency_ms": forward_latency_metadata / 1.0e6,
+                "back_latency_ns": back_latency_metadata,
+                "back_latency_ms": back_latency_metadata / 1.0e6,
+                "original_start_time": startTime,
+            },
         ) as span:
             if len(calls) == 0:
                 return span
@@ -149,7 +153,9 @@ class Microservice(_microservice):
                 call_child_start_time = startTime + runtime + self.clock_skew
                 runtime += forward_latency
                 if verbose:
-                    print(f"Service {self.name} calling {child.name} with latency {(forward_latency)/1.0e6} milliseconds.")
+                    print(
+                        f"Service {self.name} calling {child.name} with latency {(forward_latency)/1.0e6} milliseconds."
+                    )
                 _span = child._generate_span(
                     startTime=startTime + runtime,
                     edges=edges,
@@ -164,21 +170,29 @@ class Microservice(_microservice):
                 span.add_event(
                     name=f"Calling {child.name} in Span {_span_id}",
                     timestamp=call_child_start_time,
-                    attributes = {"service": child.name,
-                                  "spanID": _span_id,}
+                    attributes={
+                        "service": child.name,
+                        "spanID": _span_id,
+                    },
                 )
                 span.add_event(
                     name=f"Received {child.name} response in Span {_span_id}",
                     timestamp=startTime + runtime + self.clock_skew,
-                    attributes = {"service": child.name,
-                                  "spanID": _span_id,}
+                    attributes={
+                        "service": child.name,
+                        "spanID": _span_id,
+                    },
                 )
                 if verbose:
-                    print(f"Service {self.name} received response from {child.name} after {(forward_latency + _duration + back_latency)/1.0e6} milliseconds.")
+                    print(
+                        f"Service {self.name} received response from {child.name} after {(forward_latency + _duration + back_latency)/1.0e6} milliseconds."
+                    )
 
             span._end_time = span._start_time + max(self.LEAF_RUNTIME, runtime)
             if verbose:
-                print(f"Service {self.name} received responses within {(span._end_time - span._start_time)/1.0e6} milliseconds.")
+                print(
+                    f"Service {self.name} received responses within {(span._end_time - span._start_time)/1.0e6} milliseconds."
+                )
             return span
 
     def generate_trace(
@@ -247,7 +261,7 @@ class Application:
         self._qc()
         self._frontend_cumsum = np.cumsum(weights)
 
-    def generate_trace(self, startTime = None, verbose: bool = False):
+    def generate_trace(self, startTime=None, verbose: bool = False):
         value = np.random.rand()
         frontend = self.frontends[np.searchsorted(self._frontend_cumsum, value)]
         if startTime is None:

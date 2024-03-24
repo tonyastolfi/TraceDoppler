@@ -4,7 +4,12 @@ import argparse
 
 import numpy as np
 
-from .utils import get_ntp_params_calltree, generate_call_tree, get_attribute_from_tags, get_attribute_idx_from_tags
+from .utils import (
+    get_ntp_params_calltree,
+    generate_call_tree,
+    get_attribute_from_tags,
+    get_attribute_idx_from_tags,
+)
 
 
 def apply_ntp_symmetric(parentSpan, childSpan, theta, delta, only_parent=True):
@@ -24,6 +29,7 @@ def apply_ntp_symmetric(parentSpan, childSpan, theta, delta, only_parent=True):
         childSpan["startTime"] = child_start_time
 
     return parentSpan, childSpan
+
 
 def _preprocess_original_time(tracedata, verbose=True):
     """Preprocesses the original time tags from Toy Data if applicable. Modifies in-place."""
@@ -57,7 +63,7 @@ def _preprocess_original_time(tracedata, verbose=True):
 
 
 def correct_skew(tracedata, verbose=False):
-    """Corrects the skew in a trace."""
+    """Corrects the skew in a trace, only works on a pair of spans. Modifies in-place."""
 
     _preprocess_original_time(tracedata, verbose=verbose)
 
@@ -129,6 +135,8 @@ def correct_skew(tracedata, verbose=False):
         for span in spans:
             idx = get_attribute_idx_from_tags(child_span, "clock_skew_correction")
             if idx != -1:
-                child_span["tags"][idx]["value"] = str(int(child_span["tags"][idx]["value"]))
+                child_span["tags"][idx]["value"] = str(
+                    int(child_span["tags"][idx]["value"])
+                )
 
     return tracedata

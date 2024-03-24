@@ -1,5 +1,6 @@
 from typing import List
 
+
 def generate_call_tree(trace):
     """Generates a span call tree from a trace."""
     spans = trace["spans"]
@@ -20,12 +21,12 @@ def generate_call_tree(trace):
             call_tree[span] = []
 
     # Breadth first search to build the call tree
-    queue = list(call_tree.keys())
+    queue = [(i, call_tree) for i in call_tree.keys()]
     while queue:
-        span = queue.pop(0)
+        span, curr_tree = queue.pop(0)
         for child in child_relationships[span]:
-            call_tree[span].append(child)
-            queue.append(child)
+            curr_tree[span].append({child: []})
+            queue.append((child, curr_tree[span][-1]))
 
     return call_tree
 
@@ -71,6 +72,7 @@ def get_ntp_params_calltree(call_tree, spans):
                 (theta, delta, childSpan["operationName"])
             )
     return ntp_params
+
 
 def get_attribute_from_tags(span, attribute, default=None):
     """Gets an attribute from the tags of a span."""
