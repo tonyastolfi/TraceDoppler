@@ -49,7 +49,11 @@ def main(args):
     with open(packets_json_file, 'r') as fp:
         packets = [tuple(pkt) for pkt in json.load(fp)]
 
-    rpcs = json.load(sys.stdin)
+    if len(args) >= 3:
+        with open(args[2], 'r') as fp:
+            rpcs = json.load(fp)
+    else:
+        rpcs = json.load(sys.stdin)
 
     #print("len(packets)=", len(packets))
     
