@@ -10,6 +10,8 @@ OUTPUT_FILES += output/data-2/traces-1711316915536_rpc_latency_dist.png
 OUTPUT_FILES += output/data-2/traces-1711316915536_rpc_latency_dist_with_skew_correct.png
 OUTPUT_FILES += output/data-2/traces-1711316915536_rpc_latency_dist_with_packet_correct.png
 OUTPUT_FILES += output/data-2/traces-1711316915536_rpc_latency_dist_with_packet_and_skew_correct.png
+OUTPUT_FILES += output/data-2/traces-1711316915536_rpc_skew_dist.png
+OUTPUT_FILES += output/data-2/traces-1711316915536_rpc_skew_dist_with_packet_correct.png
 
 .PHONY: all
 all: $(OUTPUT_FILES)
@@ -56,7 +58,18 @@ output/%_rpc_latency_dist_with_skew_correct.png: output/%_rpcs.json
 	source env/bin/activate && cat $< | python correct_rpc_skew.py | python plot_rpc_latency.py $@
 
 output/%_rpc_latency_dist_with_packet_correct.png: output/%_packets.json output/%_rpcs.json
+	mkdir -p "$(shell dirname "$@")"
 	source env/bin/activate && python correct_rpcs_using_packets.py $^ | python plot_rpc_latency.py $@
 
 output/%_rpc_latency_dist_with_packet_and_skew_correct.png: output/%_packets.json output/%_rpcs.json
+	mkdir -p "$(shell dirname "$@")"
 	source env/bin/activate && python correct_rpcs_using_packets.py $^ | python correct_rpc_skew.py | python plot_rpc_latency.py $@
+
+output/%_rpc_skew_dist.png: output/%_rpcs.json
+	mkdir -p "$(shell dirname "$@")"
+	source env/bin/activate && cat $< | python plot_rpc_skew.py $@
+
+output/%_rpc_skew_dist_with_packet_correct.png: output/%_packets.json output/%_rpcs.json
+	mkdir -p "$(shell dirname "$@")"
+	source env/bin/activate && python correct_rpcs_using_packets.py $^ | python correct_rpc_skew.py | python plot_rpc_skew.py $@
+
