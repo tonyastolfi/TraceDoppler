@@ -1,7 +1,7 @@
 import bisect
 import json
 import sys
-
+import spans2rpcs
 
 
 PACKET_SRC_IP = 0
@@ -33,9 +33,10 @@ def find_packet(packets, src_host, src_port, dst_host, dst_port, time_usec):
     best_i, best_dt = probe(-1, best_i, best_dt)
     best_i, best_dt = probe(1, best_i, best_dt)
 
-    print("best_i=", best_i)
-    print("packet=", packets[best_i])
-    print("   key=", key)
+    if False:
+        print("best_i=", best_i)
+        print("packet=", packets[best_i])
+        print("   key=", key)
     
     return packets[best_i], best_dt
 
@@ -44,13 +45,13 @@ def main(args):
     packets = None
     packets_json_file = args[1]
 
-    print("file is ", packets_json_file)
+    #print("file is ", packets_json_file)
     with open(packets_json_file, 'r') as fp:
         packets = [tuple(pkt) for pkt in json.load(fp)]
 
     rpcs = json.load(sys.stdin)
 
-    print("len(packets)=", len(packets))
+    #print("len(packets)=", len(packets))
     
     for rpc in rpcs:
         client_host = rpc["client.host"]
@@ -71,23 +72,31 @@ def main(args):
         old_latency = query_recv_time_usec - query_send_time_usec
         new_latency = query_pkt[PACKET_RECV_TIME] - query_pkt[PACKET_SEND_TIME]
 
-        print("QUERY: ", query_send_time_usec, "->", query_pkt[PACKET_SEND_TIME],
-              " (", query_dt, ")  ",
-              query_recv_time_usec, "->", query_pkt[PACKET_RECV_TIME], "  ",
-              old_latency, "->", new_latency, "  (", new_latency - old_latency, ")")
+        if False:
+            print("QUERY: ", query_send_time_usec, "->", query_pkt[PACKET_SEND_TIME],
+                  " (", query_dt, ")  ",
+                  query_recv_time_usec, "->", query_pkt[PACKET_RECV_TIME], "  ",
+                  old_latency, "->", new_latency, "  (", new_latency - old_latency, ")")
 
         old_latency = reply_recv_time_usec - reply_send_time_usec
         new_latency = reply_pkt[PACKET_RECV_TIME] - reply_pkt[PACKET_SEND_TIME]
-                    
-        print("REPLY: ", reply_send_time_usec, "->", reply_pkt[PACKET_SEND_TIME],
-              " (", reply_dt, ")  ",
-              reply_recv_time_usec, "->", reply_pkt[PACKET_RECV_TIME], "  ",
-              old_latency, "->", new_latency, "  (", new_latency - old_latency, ")")
 
-        print()
+        if False:
+            print("REPLY: ", reply_send_time_usec, "->", reply_pkt[PACKET_SEND_TIME],
+                  " (", reply_dt, ")  ",
+                  reply_recv_time_usec, "->", reply_pkt[PACKET_RECV_TIME], "  ",
+                  old_latency, "->", new_latency, "  (", new_latency - old_latency, ")")
+            print()
 
-    print("len(packets)=", len(packets))
-        
+        rpc["query.send.time.usec"] = query_pkt[PACKET_SEND_TIME]
+        rpc["query.recv.time.usec"] = query_pkt[PACKET_RECV_TIME]
+        rpc["reply.send.time.usec"] = reply_pkt[PACKET_SEND_TIME]
+        rpc["reply.recv.time.usec"] = reply_pkt[PACKET_RECV_TIME]
+
+        rpc = spans2rpcs.update_latencies(rpc)
+
+    #print("len(packets)=", len(packets))
+    json.dump(rpcs, sys.stdout)
 
 
 #==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
