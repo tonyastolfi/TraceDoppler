@@ -22,7 +22,7 @@ venv: env/
 env/:
 	python3 -m venv env
 	source env/bin/activate && pip install --upgrade pip
-	source env/bin/activate && pip install dpkt matplotlib numpy
+	source env/bin/activate && pip install dpkt matplotlib numpy dataclasses-json jq
 
 output/:
 	mkdir -p output
@@ -39,7 +39,7 @@ output/%_spans.json: %.json env/
 
 output/%_rpcs.json: output/%_spans.json env/
 	mkdir -p "$(shell dirname "$@")"
-	source env/bin/activate && python spans2rpcs.py < $< > $@
+	source env/bin/activate && python spans2rpcs.py < $< | jq . > $@
 
 output/data-2/traces-1711316915536_packets.json: data-2/trace.epyc3451.2024-03-24T21-30-38.pcap data-2/trace.thebeast.2024-03-24T17-30-40.pcap env/
 	mkdir -p "$(shell dirname "$@")"

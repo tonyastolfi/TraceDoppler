@@ -19,16 +19,23 @@ def main(args):
         for host, filename in host_pcap_files.items()
     }
 
-    # (src.ip, src.port, dst.ip, dst.port, seq) -> {"sendTime":, "recvTime":}
+    # (src.ip, src.port, dst.ip, dst.port, seq, size) -> {"sendTime":, "recvTime":}
     #
     all_packets = {}
     for host, packets in host_pcaps.items():
         for pkt in packets:
-            src_host = pkt["src.ip"]
-            dst_host = pkt["dst.ip"]
+            src_host = pkt["src.addr.ip"]
+            dst_host = pkt["dst.addr.ip"]
 
             if host == src_host or host == dst_host:
-                key = (src_host, pkt["src.port"], dst_host, pkt["dst.port"], pkt["seq"])
+                key = (
+                    src_host,
+                    pkt["src.port.tcp"],
+                    dst_host,
+                    pkt["dst.port.tcp"],
+                    pkt["seq.tcp"],
+                    pkt['size.bytes'],
+                )
 
                 if key not in all_packets:
                     all_packets[key] = {}
@@ -36,15 +43,21 @@ def main(args):
                 if host == src_host:
                     all_packets[key]["send.time.usec"] = pkt["time.usec"]
                 else:
+                    assert(host == dst_host)
                     all_packets[key]["recv.time.usec"] = pkt["time.usec"]
 
     packets_with_ts = sorted([
-        (src_ip, src_port,
-         dst_ip, dst_port,
-         times['send.time.usec'],
-         times['recv.time.usec'],
-         seq)
-        for ((src_ip, src_port, dst_ip, dst_port, seq), times) in all_packets.items()
+        {
+            'src.addr.ip': src_ip,
+            'src.port.tcp': src_port,
+            'dst.addr.ip': dst_ip,
+            'dst.port.tcp': dst_port,
+            'send.time.usec': times['send.time.usec'],
+            'recv.time.usec': times['recv.time.usec'],
+            'seq.tcp': seq,
+            'size.bytes': size_bytes,
+        }
+        for ((src_ip, src_port, dst_ip, dst_port, seq, size_bytes), times) in all_packets.items()
         if "send.time.usec" in times and "recv.time.usec" in times
     ])
     
