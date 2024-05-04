@@ -39,6 +39,8 @@ HOST_TO_IP = {
     "epyc3451.en": "192.168.1.195",
 }
 
+HIST_BINS = 64
+
 
 #=#=#==#==#===============+=+=+=+=++=++++++++++++++-++-+--+-+----+---------------
 # Data classes
@@ -144,14 +146,22 @@ class PacketSpacing:
     """
     send_interval_usec: Optional[float] = None
     recv_interval_usec: Optional[float] = None
+    pkt1_size: Optional[int] = None
+    pkt2_size: Optional[int] = None
 
     def delta(self):
         if (self.send_interval_usec is None or
             self.recv_interval_usec is None or
-            self.send_interval_usec <= 0.0 or
-            self.recv_interval_usec <= 0.0 or
-            self.send_interval_usec >= USEC_PER_SEC or
-            self.recv_interval_usec >= USEC_PER_SEC):
+            self.pkt1_size is None or
+            self.pkt2_size is None or
+            self.send_interval_usec < -USEC_PER_SEC / 5.0 or
+            self.recv_interval_usec < -USEC_PER_SEC / 5.0 or
+            self.send_interval_usec > USEC_PER_SEC / 5.0 or
+            self.recv_interval_usec > USEC_PER_SEC / 5.0):
+            #self.send_interval_usec <= 0.0 or
+            #self.recv_interval_usec <= 0.0 or
+            #self.send_interval_usec >= USEC_PER_SEC or
+            #self.recv_interval_usec >= USEC_PER_SEC):
             return None
 
         return self.recv_interval_usec - self.send_interval_usec
@@ -181,7 +191,7 @@ class HostPair:
 #
 @dataclass_json
 @dataclass
-class TransitDelta:
+class TransmitDelta:
     """
     Statistical summary of the one-way overhead of packet transmission
     between a specific host pair, as obtained by the "two-packets"
@@ -190,18 +200,26 @@ class TransitDelta:
     mean: float
     median: float
     stdev: float
-    samples: list[float]
+    samples: list[tuple[float, int, int]]  # (usec_time, pkt1_size, pkt2_size)
 
     def from_samples(packet_spacings, outlier_sigmas=3):
         if len(packet_spacings) == 0:
             return None
 
-        samples = sorted([x.delta() for x in packet_spacings])
-        samples = remove_outliers(samples, outlier_sigmas)
+        samples = sorted([(x.delta(), x.pkt1_size, x.pkt2_size)
+                          for x in packet_spacings])
 
-        return TransitDelta(mean=statistics.mean(samples),
-                            median=statistics.median(samples),
-                            stdev=statistics.stdev(samples),
+        sigma = statistics.stdev(delta for delta, _, _ in samples)
+        median = statistics.median(delta for delta, _, _ in samples)
+
+        # Remove outliers.
+        #
+        samples = [(delta, pkt1_size, pkt2_size) for delta, pkt1_size, pkt2_size in samples
+                   if abs(delta - median) < sigma * outlier_sigmas]
+
+        return TransmitDelta(mean=statistics.mean(delta for delta, _, _ in samples),
+                            median=statistics.median(delta for delta, _, _ in samples),
+                            stdev=statistics.stdev(delta for delta, _, _ in samples),
                             samples=samples)
 
 
@@ -248,7 +266,7 @@ class LinkBias:
     query_bias: float
     reply_bias: float
 
-    def from_transit_deltas(query_delta, reply_delta,
+    def from_transmit_deltas(query_delta, reply_delta,
                             method=lambda delta: delta.mean):
         query_delta = method(query_delta)
         reply_delta = method(reply_delta)
@@ -398,6 +416,7 @@ def remove_outliers(samples, n_sigmas=3):
 
 def read_spans(stream):
     raw_trace = json.load(stream)
+    print(f"TRACE COUNT = {len(raw_trace['data'])}")
     raw_spans = [span
                  for trace in raw_trace["data"]
                  for span in trace["spans"]]
@@ -481,7 +500,7 @@ def read_pcap_file(host, filename):
 
 
 def link_bias_from_captured_packets(captured_packets, outlier_sigmas=3):
-    # (first_packet, second_packet) -> PacketSpacing
+    # (pkt1, pkt2) -> PacketSpacing
     #
     packet_spacing = collections.defaultdict(lambda: PacketSpacing())
 
@@ -504,8 +523,8 @@ def link_bias_from_captured_packets(captured_packets, outlier_sigmas=3):
 
         # If this packet was captured by the sending host, add an entry to the packet spacing map.
         #
-        is_sender = (captured.capture_host_ip == captured.packet.src_addr_ip)
-        if is_sender:
+        captured_by_sender = (captured.capture_host_ip == captured.packet.src_addr_ip)
+        if captured_by_sender:
             prev = prev_by_pair[host_pair]
 
             if prev is not None:
@@ -514,30 +533,33 @@ def link_bias_from_captured_packets(captured_packets, outlier_sigmas=3):
                 # Ignore non-positive packet send intervals.
                 #
                 if delta > 0.0:
-                    packet_spacing[(prev.packet, captured.packet)].send_interval_usec = delta
+                    packet_pair = (prev.packet, captured.packet)
+                    packet_spacing[packet_pair].send_interval_usec = delta
+                    packet_spacing[packet_pair].pkt1_size = prev.packet.size_bytes
+                    packet_spacing[packet_pair].pkt2_size = captured.packet.size_bytes
 
             prev_by_pair[host_pair] = captured
 
     # Second pass: Fill in missing recv_interval_usec fields in packet_spacing values.
     #
-    for (first_packet, second_packet) in packet_spacing:
-        assert first_packet.src_addr_ip == second_packet.src_addr_ip
-        assert first_packet.dst_addr_ip == second_packet.dst_addr_ip
+    for (pkt1, pkt2) in packet_spacing:
+        assert pkt1.src_addr_ip == pkt2.src_addr_ip
+        assert pkt1.dst_addr_ip == pkt2.dst_addr_ip
 
-        dst_host = first_packet.dst_addr_ip
+        dst_host = pkt1.dst_addr_ip
 
-        first_packet_recv_time_usec = capture_time_by_host_packet[dst_host][first_packet]
-        if first_packet_recv_time_usec == 0.0:
+        pkt1_recv_time_usec = capture_time_by_host_packet[dst_host][pkt1]
+        if pkt1_recv_time_usec == 0.0:
             continue
 
-        second_packet_recv_time_usec = capture_time_by_host_packet[dst_host][second_packet]
-        if second_packet_recv_time_usec == 0.0:
+        pkt2_recv_time_usec = capture_time_by_host_packet[dst_host][pkt2]
+        if pkt2_recv_time_usec == 0.0:
             continue
 
-        delta = second_packet_recv_time_usec - first_packet_recv_time_usec
+        delta = pkt2_recv_time_usec - pkt1_recv_time_usec
 
         if delta > 0.0:
-            packet_spacing[(first_packet, second_packet)].recv_interval_usec = delta
+            packet_spacing[(pkt1, pkt2)].recv_interval_usec = delta
 
     # Filter out any invalid (==None) PacketSpacing delta values.
     #
@@ -556,30 +578,28 @@ def link_bias_from_captured_packets(captured_packets, outlier_sigmas=3):
                      dst_addr_ip = packet.dst_addr_ip)
         ].append(spacing)
 
-    transit_deltas_by_host_pair = {
-        host_pair: transit_delta
+    transmit_deltas_by_host_pair = {
+        host_pair: transmit_delta
         for host_pair, samples in packet_spacing_by_pair.items()
-        for transit_delta in (TransitDelta.from_samples(samples, outlier_sigmas),)
-        if transit_delta is not None
+        for transmit_delta in (TransmitDelta.from_samples(samples, outlier_sigmas),)
+        if transmit_delta is not None
     }
 
     link_bias = {}
 
-    for host_pair, transit_delta in transit_deltas_by_host_pair.items():
+    for host_pair, transmit_delta in transmit_deltas_by_host_pair.items():
         reverse_pair = host_pair.reverse()
-        if reverse_pair not in transit_deltas_by_host_pair:
+        if reverse_pair not in transmit_deltas_by_host_pair:
             continue
 
-        print(transit_delta)
+        reverse_delta = transmit_deltas_by_host_pair[reverse_pair]
 
-        reverse_delta = transit_deltas_by_host_pair[reverse_pair]
-
-        link_bias[host_pair] = LinkBias.from_transit_deltas(
-            query_delta=transit_delta,
+        link_bias[host_pair] = LinkBias.from_transmit_deltas(
+            query_delta=transmit_delta,
             reply_delta=reverse_delta
         )
 
-    return link_bias
+    return link_bias, transmit_deltas_by_host_pair
 
 
 def captured_to_traced_packets(all_captured):
@@ -652,26 +672,20 @@ def pretty_json(dataclass_value):
     return json.dumps(dataclass_value.to_dict(), indent=2)
 
 
-def show_histogram(data, xlabel="Value", ylabel="Count"):
-    min_value = min(data)
-    max_value = max(data)
-
-    min_value -= min_value % 10
-    max_value += 9
-    max_value -= max_value % 10
-
-    bins = numpy.linspace(min_value, max_value, 100)
-    fig, ax = pyplot.subplots()
-
-    ax.hist(data, bins, alpha=0.5, label=None)
-    #ax.legend(loc='upper right')
-    ax.set_xlabel(xlabel)
-    ax.set_ylabel(ylabel)
+def add_to_hist(ax, bins, data, label):
+    ax.hist(data, bins, alpha=0.5,
+            label=(f"{label} (avg={round(statistics.mean(data), 1)}" +
+                   f" σ={round(statistics.stdev(data), 2)})"))
 
 
 #=#=#==#==#===============+=+=+=+=++=++++++++++++++-++-+--+-+----+---------------
 
 def main(args):
+    pyplot.rc('font', family='serif')
+    pyplot.rc('font', serif='Times New Roman')
+    pyplot.rc('text', usetex='false')
+    pyplot.rcParams.update({'font.size': 12})
+
     # Load all captured packets.
     #
     all_captured = [
@@ -680,9 +694,9 @@ def main(args):
         for p in read_pcap_file(host, filename)
     ]
 
-    # Calculate transit deltas using the "Two Packets Method."
+    # Calculate transmit deltas using the "Two Packets Method."
     #
-    link_bias = link_bias_from_captured_packets(all_captured)
+    link_bias, transmit_deltas = link_bias_from_captured_packets(all_captured)
     print("len(link_bias)=", len(link_bias))
 
     for host_pair, bias in link_bias.items():
@@ -711,7 +725,7 @@ def main(args):
                    if TCPPacketFlowId.from_packet(p.packet) in rpc_flow_ids]
 
     print(f"\nlen(all_captured)={len(all_captured)}, len(rpc_packets)={len(rpc_packets)}")
-    filtered_link_bias = link_bias_from_captured_packets(rpc_packets)
+    filtered_link_bias, filtered_transmit_deltas = link_bias_from_captured_packets(rpc_packets)
     print("len(filtered_link_bias)=", len(filtered_link_bias))
     for host_pair, bias in filtered_link_bias.items():
         print(host_pair, bias)
@@ -747,7 +761,7 @@ def main(args):
     #                         for r in rpcs]
 
     skew_rpc_packets_bias = remove_outliers(
-        [r.estimate_clock_skew(filtered_link_bias[r.link])
+        [r.estimate_clock_skew(link_bias[r.link])
          for r in rpcs]
     )
 
@@ -760,11 +774,13 @@ def main(args):
     #                         for r in packet_ts_rpcs]
 
     skew_rpc_packets_bias_pts = remove_outliers(
-        [r.estimate_clock_skew(filtered_link_bias[r.link])
+        [r.estimate_clock_skew(link_bias[r.link])
          for r in packet_ts_rpcs]
     )
 
-    data = skew_no_bias + skew_no_bias_pts + skew_rpc_packets_bias_pts
+    #+++++++++++-+-+--+----- --- -- -  -  -   -
+    #
+    data = skew_no_bias + skew_no_bias_pts + skew_rpc_packets_bias_pts + skew_rpc_packets_bias
 
     min_value = min(data)
     max_value = max(data)
@@ -773,26 +789,425 @@ def main(args):
     max_value += 9
     max_value -= max_value % 10
 
-    bins = numpy.linspace(min_value, max_value, 100)
+    bins = numpy.linspace(min_value, max_value, HIST_BINS)
 
     fig, ax = pyplot.subplots()
 
-    def add_to_hist(data, label):
-        ax.hist(data, bins, alpha=0.5,
-                label=f"{label} (avg={round(statistics.mean(data), 1)} σ={round(statistics.stdev(data), 2)})")
+    fig.suptitle('Histogram of Clock Skew Estimations (Per RPC)')
 
-    add_to_hist(skew_no_bias, "Raw")
-    add_to_hist(skew_no_bias_pts, "PTS")
-    add_to_hist(skew_rpc_packets_bias, "2PM")
-    add_to_hist(skew_rpc_packets_bias_pts, "PTS, 2PM")
+    add_to_hist(ax, bins, skew_no_bias, "Raw")
+    add_to_hist(ax, bins, skew_no_bias_pts, "PTS")
+    add_to_hist(ax, bins, skew_rpc_packets_bias, "2PM")
+    add_to_hist(ax, bins, skew_rpc_packets_bias_pts, "PTS,2PM")
 
     ax.legend(loc='upper left')
-    ax.set_xlabel("Clock Skew (client - server), usec")
-    ax.set_ylabel("Count")
+    ax.set_xlabel("Clock Skew (usec; client - server)")
+    ax.set_ylabel("Count (RPCs)")
 
+
+    #+++++++++++-+-+--+----- --- -- -  -  -   -
+    #
+    avg_clock_skew_pts_2pm = statistics.mean([
+        r.estimate_clock_skew(filtered_link_bias[r.link])
+        for r in packet_ts_rpcs
+    ])
+
+    query_cost_pts_2pm = remove_outliers([
+        r.query_cost(avg_clock_skew_pts_2pm, filtered_link_bias[r.link])
+        for r in packet_ts_rpcs
+    ], 20)
+
+    reply_cost_pts_2pm = remove_outliers([
+        r.reply_cost(avg_clock_skew_pts_2pm, filtered_link_bias[r.link])
+        for r in packet_ts_rpcs
+    ], 20)
+
+    #----- --- -- -  -  -   -
+    avg_clock_skew_raw = statistics.mean([
+        r.estimate_clock_skew(LinkBias.null())
+        for r in rpcs
+    ])
+
+    query_cost_raw = remove_outliers([
+        r.query_cost(avg_clock_skew_raw, LinkBias.null())
+        for r in rpcs
+    ], 20)
+
+    reply_cost_raw = remove_outliers([
+        r.reply_cost(avg_clock_skew_raw, LinkBias.null())
+        for r in rpcs
+    ], 20)
+
+    #----- --- -- -  -  -   -
+    data = query_cost_raw + reply_cost_raw
+
+    min_value = min(data)
+    max_value = max(data)
+
+    min_value -= min_value % 10
+    max_value += 9
+    max_value -= max_value % 10
+
+    bins = numpy.linspace(min_value, max_value, HIST_BINS)
+
+    #----- --- -- -  -  -   -
+    fig, ax = pyplot.subplots()
+
+    fig.suptitle('Histogram of Message Cost (Query + Reply)')
+
+    add_to_hist(ax, bins, query_cost_raw, "Query")
+    add_to_hist(ax, bins, reply_cost_raw, "Reply")
+
+    ax.legend(loc='upper right')
+    ax.set_xlabel("Cost (unitless)")
+    ax.set_ylabel("Count (Messages)")
+    ax.set_title(f"Mean clock skew (client - server) = {round(avg_clock_skew_raw, 1)} usec")
+
+    #----- --- -- -  -  -   -
+    data = query_cost_pts_2pm + reply_cost_pts_2pm + query_cost_raw + reply_cost_raw
+
+    min_value = min(data)
+    max_value = max(data)
+
+    min_value -= min_value % 10
+    max_value += 9
+    max_value -= max_value % 10
+
+    bins = numpy.linspace(min_value, max_value, HIST_BINS)
+
+    #----- --- -- -  -  -   -
+    fig, ax = pyplot.subplots()
+
+    fig.suptitle('Histogram of Message Cost (Query + Reply)')
+
+    add_to_hist(ax, bins, query_cost_raw, "Query:Raw")
+    add_to_hist(ax, bins, reply_cost_raw, "Reply:Raw")
+    add_to_hist(ax, bins, query_cost_pts_2pm, "Query:PTS,2PM")
+    add_to_hist(ax, bins, reply_cost_pts_2pm, "Reply:PTS,2PM")
+
+    ax.legend(loc='upper right')
+    ax.set_xlabel("Cost (unitless)")
+    ax.set_ylabel("Count (Messages)")
+
+    #+++++++++++-+-+--+----- --- -- -  -  -   -
+    #
+    query_latency_pts = remove_outliers([
+        r.query_latency_usec()
+        for r in packet_ts_rpcs
+    ])
+
+    reply_latency_pts = remove_outliers([
+        r.reply_latency_usec()
+        for r in packet_ts_rpcs
+    ])
+
+    #----- --- -- -  -  -   -
+    data = query_latency_pts + reply_latency_pts
+
+    min_value = min(data)
+    max_value = max(data)
+
+    min_value -= min_value % 10
+    max_value += 9
+    max_value -= max_value % 10
+
+    bins = numpy.linspace(min_value, max_value, HIST_BINS)
+
+    #----- --- -- -  -  -   -
+    fig, ax = pyplot.subplots()
+
+    fig.suptitle('Histogram of Packet Network Latency (Query + Reply)')
+
+    add_to_hist(ax, bins, query_latency_pts, "Query")
+    add_to_hist(ax, bins, reply_latency_pts, "Reply")
+
+    ax.legend(loc='upper left')
+    ax.set_xlabel("Packet Latency (usec; recv_time - sent_time)")
+    ax.set_ylabel("Count (Messages)")
+    ax.set_title(f"({-min(query_latency_pts)} usec < Clock Skew < {min(reply_latency_pts)} usec)")
+
+
+    #+++++++++++-+-+--+----- --- -- -  -  -   -
+    #
+    avg_clock_skew_pts = statistics.mean(remove_outliers(
+        [r.estimate_clock_skew(LinkBias.null())
+         for r in packet_ts_rpcs]
+    ))
+
+    query_cost_pts = remove_outliers([
+        r.query_cost(avg_clock_skew_pts, LinkBias.null())
+        for r in packet_ts_rpcs
+    ])
+
+    reply_cost_pts = remove_outliers([
+        r.reply_cost(avg_clock_skew_pts, LinkBias.null())
+        for r in packet_ts_rpcs
+    ])
+
+    #----- --- -- -  -  -   -
+    data = query_cost_pts + reply_cost_pts
+
+    min_value = min(data)
+    max_value = max(data)
+
+    min_value -= min_value % 10
+    max_value += 9
+    max_value -= max_value % 10
+
+    bins = numpy.linspace(min_value, max_value, HIST_BINS)
+
+    #----- --- -- -  -  -   -
+    fig, ax = pyplot.subplots()
+
+    fig.suptitle('Histogram of Packet Cost (Query + Reply)')
+
+    add_to_hist(ax, bins, query_cost_pts, "Query")
+    add_to_hist(ax, bins, reply_cost_pts, "Reply")
+
+    ax.legend(loc='upper right')
+    ax.set_xlabel("Packet Cost (unitless)")
+    ax.set_ylabel("Count (Messages)")
+    ax.set_title(f"Mean clock skew (client - server) = {round(avg_clock_skew_pts, 1)} usec")
+
+    #+++++++++++-+-+--+----- --- -- -  -  -   -
+    #
+    query_latency_raw = remove_outliers([
+        r.query_latency_usec()
+        for r in rpcs
+    ])
+
+    reply_latency_raw = remove_outliers([
+        r.reply_latency_usec()
+        for r in rpcs
+    ])
+
+    #----- --- -- -  -  -   -
+    data = query_latency_raw + reply_latency_raw
+
+    min_value = min(data)
+    max_value = max(data)
+
+    min_value -= min_value % 10
+    max_value += 9
+    max_value -= max_value % 10
+
+    bins = numpy.linspace(min_value, max_value, HIST_BINS)
+
+    #----- --- -- -  -  -   -
+    fig, ax = pyplot.subplots()
+
+    fig.suptitle('Histogram of Message Network Latency (Query + Reply)')
+
+    add_to_hist(ax, bins, query_latency_raw, "Query")
+    add_to_hist(ax, bins, reply_latency_raw, "Reply")
+
+    ax.legend(loc='upper left')
+    ax.set_xlabel("Network Latency (usec; recv_time - sent_time)")
+    ax.set_ylabel("Count (Messages)")
+    ax.set_title(f"({-min(query_latency_raw)} usec < Clock Skew < {min(reply_latency_raw)} usec)")
+
+    #+++++++++++-+-+--+----- --- -- -  -  -   -
+
+    if False:
+        assert len(transmit_deltas) == 2
+
+        fig, axs = pyplot.subplots(2, 1)
+
+        fig.suptitle('Scatter Plot of Packet Size vs Extra Delay (2PM, All Packets)')
+
+        transmit_deltas_items = list(transmit_deltas.items())
+        for i in range(len(transmit_deltas)):
+            host_pair, transmit_delta = transmit_deltas_items[i]
+            samples = transmit_delta.samples
+            x = [size  for _, _, size  in samples]
+            y = [delta for delta, _, _ in samples]
+            cf = statistics.correlation(x, y)
+            axs[i].scatter(x, y)
+            axs[i].set_title(f"{host_pair.src_addr_ip} to {host_pair.dst_addr_ip} (ρ = {round(cf, 2)})")
+            axs[i].set_ylabel("Extra Packet Delay (usec)")
+            axs[i].set_xlabel("Second Packet Size (bytes)")
+            axs[i].axhline(transmit_delta.mean, label=f"avg ({round(transmit_delta.mean, 3)}usec)",
+                           linewidth=1, color='r')
+            axs[i].legend(loc='lower right')
+
+
+        pyplot.subplots_adjust(hspace=0.6)
+
+    #+++++++++++-+-+--+----- --- -- -  -  -   -
+
+    if False:
+        assert len(transmit_deltas) == 2
+
+        fig, axs = pyplot.subplots(2, 1)
+
+        fig.suptitle('Scatter Plot of Packet Size vs Extra Delay (2PM, All Packets)')
+
+        transmit_deltas_items = list(transmit_deltas.items())
+        for i in range(len(transmit_deltas)):
+            host_pair, transmit_delta = transmit_deltas_items[i]
+            samples = transmit_delta.samples
+            x = [size  for _, size, _  in samples]
+            y = [delta for delta, _, _ in samples]
+            cf = statistics.correlation(x, y)
+            axs[i].scatter(x, y)
+            axs[i].set_title(f"{host_pair.src_addr_ip} to {host_pair.dst_addr_ip} (ρ = {round(cf, 2)})")
+            axs[i].set_ylabel("Extra Packet Delay (usec)")
+            axs[i].set_xlabel("First Packet Size (bytes)")
+            axs[i].axhline(transmit_delta.mean, label=f"avg ({round(transmit_delta.mean, 3)}usec)",
+                           linewidth=1, color='r')
+            axs[i].legend(loc='lower right')
+
+
+        pyplot.subplots_adjust(hspace=0.6)
+
+    #+++++++++++-+-+--+----- --- -- -  -  -   -
+
+    assert len(transmit_deltas) == 2
+
+    fig, axs = pyplot.subplots(2, 1)
+
+    fig.suptitle('Scatter Plot of Packet Size vs Extra Delay (2PM, All Packets)')
+
+    transmit_deltas_items = list(transmit_deltas.items())
+    for i in range(len(transmit_deltas)):
+        host_pair, transmit_delta = transmit_deltas_items[i]
+        samples = transmit_delta.samples
+        x = [pkt2_size - pkt1_size  for delta, pkt1_size, pkt2_size  in samples]
+        y = [delta for delta, _, _ in samples]
+        cf = statistics.correlation(x, y)
+        axs[i].scatter(x, y)
+        axs[i].set_title(f"{host_pair.src_addr_ip} to {host_pair.dst_addr_ip} (ρ = {round(cf, 2)})")
+        axs[i].set_ylabel("Extra Packet Delay (usec)")
+        axs[i].set_xlabel("Second Packet - First Packet Size (bytes)")
+        axs[i].axhline(transmit_delta.mean, label=f"avg ({round(transmit_delta.mean, 3)}usec)",
+                       linewidth=1, color='r')
+        axs[i].legend(loc='lower right')
+
+
+    pyplot.subplots_adjust(hspace=0.6)
+
+    #+++++++++++-+-+--+----- --- -- -  -  -   -
+
+    if False:
+        assert len(filtered_transmit_deltas) == 2
+
+        fig, axs = pyplot.subplots(2, 1)
+
+        fig.suptitle('Scatter Plot of Packet Size vs Extra Delay (2PM, RPC Packets Only)')
+
+        filtered_transmit_deltas_items = list(filtered_transmit_deltas.items())
+        for i in range(len(filtered_transmit_deltas)):
+            host_pair, transmit_delta = filtered_transmit_deltas_items[i]
+            samples = transmit_delta.samples
+            x = [size  for _, _, size  in samples]
+            y = [delta for delta, _, _ in samples]
+            cf = statistics.correlation(x, y)
+            axs[i].scatter(x, y)
+            axs[i].set_title(f"{host_pair.src_addr_ip} to {host_pair.dst_addr_ip} (ρ = {round(cf, 2)})")
+            axs[i].set_ylabel("Extra Packet Delay (usec)")
+            axs[i].set_xlabel("Second Packet Size (bytes)")
+            axs[i].axhline(transmit_delta.mean, label=f"avg ({round(transmit_delta.mean, 3)}usec)",
+                           linewidth=1, color='r')
+            axs[i].legend(loc='lower right')
+
+
+        pyplot.subplots_adjust(hspace=0.6)
+
+    #+++++++++++-+-+--+----- --- -- -  -  -   -
+
+    if False:
+        assert len(filtered_transmit_deltas) == 2
+
+        fig, axs = pyplot.subplots(2, 1)
+
+        fig.suptitle('Scatter Plot of Packet Size vs Extra Delay (2PM, RPC Packets Only)')
+
+        filtered_transmit_deltas_items = list(filtered_transmit_deltas.items())
+        for i in range(len(filtered_transmit_deltas)):
+            host_pair, transmit_delta = filtered_transmit_deltas_items[i]
+            samples = transmit_delta.samples
+            x = [size  for _, size, _  in samples]
+            y = [delta for delta, _, _ in samples]
+            cf = statistics.correlation(x, y)
+            axs[i].scatter(x, y)
+            axs[i].set_title(f"{host_pair.src_addr_ip} to {host_pair.dst_addr_ip} (ρ = {round(cf, 2)})")
+            axs[i].set_ylabel("Extra Packet Delay (usec)")
+            axs[i].set_xlabel("First Packet Size (bytes)")
+            axs[i].axhline(transmit_delta.mean, label=f"avg ({round(transmit_delta.mean, 3)}usec)",
+                           linewidth=1, color='r')
+            axs[i].legend(loc='lower right')
+
+
+        pyplot.subplots_adjust(hspace=0.6)
+
+    #+++++++++++-+-+--+----- --- -- -  -  -   -
+
+    if False:
+        assert len(filtered_transmit_deltas) == 2
+
+        fig, axs = pyplot.subplots(2, 1)
+
+        fig.suptitle('Scatter Plot of Packet Size vs Extra Delay (2PM, RPC Packets Only)')
+
+        filtered_transmit_deltas_items = list(filtered_transmit_deltas.items())
+        for i in range(len(filtered_transmit_deltas)):
+            host_pair, transmit_delta = filtered_transmit_deltas_items[i]
+            samples = transmit_delta.samples
+            x = [pkt2_size - pkt1_size  for _, pkt1_size, pkt2_size  in samples]
+            y = [delta for delta, _, _ in samples]
+            cf = statistics.correlation(x, y)
+            axs[i].scatter(x, y)
+            axs[i].set_title(f"{host_pair.src_addr_ip} to {host_pair.dst_addr_ip} (ρ = {round(cf, 2)})")
+            axs[i].set_ylabel("Extra Packet Delay (usec)")
+            axs[i].set_xlabel("Second Packet - First Packet Size (bytes)")
+            axs[i].axhline(transmit_delta.mean, label=f"avg ({round(transmit_delta.mean, 3)}usec)",
+                           linewidth=1, color='r')
+            axs[i].legend(loc='lower right')
+
+
+        pyplot.subplots_adjust(hspace=0.6)
+
+    #+++++++++++-+-+--+----- --- -- -  -  -   -
+    #
+    transmit_deltas_c2s = ([ #remove_outliers([
+        delta for delta, _, _ in list(transmit_deltas.values())[0].samples
+    ])
+
+    transmit_deltas_s2c = ([ #remove_outliers([
+        delta for delta, _, _ in list(transmit_deltas.values())[1].samples
+    ])
+
+    #----- --- -- -  -  -   -
+    data = transmit_deltas_c2s + transmit_deltas_s2c
+
+    min_value = min(data)
+    max_value = max(data)
+
+    min_value -= min_value % 10
+    max_value += 9
+    max_value -= max_value % 10
+
+    bins = numpy.linspace(min_value, max_value, HIST_BINS)
+
+    #----- --- -- -  -  -   -
+    fig, ax = pyplot.subplots()
+
+    fig.suptitle('Histogram of Extra Delay (2PM)')
+
+    add_to_hist(ax, bins, transmit_deltas_c2s, "Query")
+    add_to_hist(ax, bins, transmit_deltas_s2c, "Reply")
+
+    ax.legend(loc='upper right')
+    ax.set_xlabel("Extra Latency (usec; receiver interval - sender)")
+    ax.set_ylabel("Count (Packets)")
+
+    print(f"len(rpcs)={len(rpcs)}")
+    print(f"len(spans)={len(spans)}")
+    
     pyplot.show()
 
 
+    
 
 #==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 if __name__ == "__main__":
